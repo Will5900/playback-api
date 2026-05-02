@@ -21,13 +21,10 @@ RUN npm install --omit=dev --no-audit --no-fund
 
 COPY --from=build /app/dist ./dist
 COPY migrations ./migrations
-# tsx is needed by the migration runner at boot; bring it from the build stage.
-COPY --from=build /app/node_modules/tsx ./node_modules/tsx
-COPY --from=build /app/node_modules/typescript ./node_modules/typescript
 
 EXPOSE 4000
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD wget -qO- http://127.0.0.1:4000/healthz || exit 1
 
 # Run pending migrations on every container start, then exec the server.
-CMD sh -c "node --import tsx ./node_modules/tsx/dist/cli.mjs src/db/migrate.ts up || exit 1; node dist/server.js"
+CMD sh -c "node dist/db/migrate.js up || exit 1; node dist/server.js"
