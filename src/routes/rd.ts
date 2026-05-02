@@ -2,6 +2,13 @@
 // /me/rd-library — proxy Real-Debrid downloads enriched with TMDB posters.
 // Single round-trip from iOS instead of N (one per item).
 //
+// Three things keep this endpoint from causing the iOS "source error":
+//   1. The whole enriched response is cached per (device, page, limit) for
+//      a few minutes, so refreshes don't re-fan-out N TMDB lookups.
+//   2. TMDB calls are concurrency-limited so we never burst past the free
+//      tier's 40 req / 10s ceiling.
+//   3. TMDB failure is non-fatal — items just come back without artwork.
+//
 
 import { FastifyPluginAsync } from 'fastify';
 import { request } from 'undici';
@@ -11,7 +18,15 @@ import { env } from '../lib/env.js';
 import { TTLCache } from '../lib/cache.js';
 import { normalizeArtworkSync } from '../lib/artwork.js';
 
-const cache = new TTLCache<unknown>(10 * 60 * 1000); // 10 min
+// Per-call TMDB lookup cache.
+const tmdbCache = new TTLCache<{ poster?: string; backdrop?: string; overview?: string } | null>(60 * 60 * 1000); // 1h
+
+// Whole-response cache so repeated homepage loads don't re-do all the work.
+const responseCache = new TTLCache<unknown>(3 * 60 * 1000); // 3 min
+
+const RD_FETCH_TIMEOUT_MS = 7_000;
+const TMDB_TIMEOUT_MS = 3_500;
+const TMDB_CONCURRENCY = 4;
 
 interface RDDownload {
   id: string;
@@ -29,7 +44,7 @@ interface EnrichedRD {
   season?: number;
   episode?: number;
   isSeries: boolean;
-  // All four point at the same URL — see lib/artwork.ts.
+  // All five fields point at the same URL — see lib/artwork.ts.
   posterURL?: string;
   backdropURL?: string;
   poster?: string;
@@ -43,13 +58,13 @@ interface EnrichedRD {
   isMKV: boolean;
 }
 
-const RD_FETCH_TIMEOUT_MS = 10_000;
-
 export const rdRoutes: FastifyPluginAsync = async (app) => {
   app.get('/me/rd-library', async (req, reply) => {
     const q = z.object({
       limit: z.coerce.number().int().min(1).max(100).default(25),
       page: z.coerce.number().int().min(1).default(1),
+      // Bypass the response cache (for pull-to-refresh).
+      fresh: z.coerce.boolean().optional(),
     }).parse(req.query);
 
     const tok = await db.query<{ token: string }>(
@@ -62,6 +77,12 @@ export const rdRoutes: FastifyPluginAsync = async (app) => {
       return { error: 'no Real-Debrid token configured' };
     }
 
+    const cacheKey = `rdlib::${req.deviceId}::${q.page}::${q.limit}`;
+    if (!q.fresh) {
+      const hit = responseCache.get(cacheKey);
+      if (hit) return hit;
+    }
+
     let downloads: RDDownload[];
     try {
       downloads = await fetchDownloads(token, q.limit, q.page);
@@ -70,32 +91,38 @@ export const rdRoutes: FastifyPluginAsync = async (app) => {
       return { error: 'Real-Debrid fetch failed', details: (e as Error).message };
     }
 
-    const enriched = await Promise.all(
-      downloads.map(async (d): Promise<EnrichedRD> => {
-        const ext = d.filename.includes('.') ? d.filename.split('.').pop()!.toLowerCase() : '';
-        const parsed = parseFilename(d.filename);
-        const tmdb = await tmdbPoster(parsed.title, parsed.year, parsed.isSeries);
-        const art = normalizeArtworkSync({ poster: tmdb?.poster, backdrop: tmdb?.backdrop });
-        return {
-          id: d.id,
-          filename: d.filename,
-          niceName: parsed.title,
-          year: parsed.year,
-          season: parsed.season,
-          episode: parsed.episode,
-          isSeries: parsed.isSeries,
-          ...art,
-          overview: tmdb?.overview,
-          filesize: d.filesize,
-          download: d.download,
-          generated: d.generated,
-          ext,
-          isMKV: ext === 'mkv',
-        };
-      })
-    );
+    const enriched = await mapWithConcurrency(downloads, TMDB_CONCURRENCY, async (d): Promise<EnrichedRD> => {
+      const ext = d.filename.includes('.') ? d.filename.split('.').pop()!.toLowerCase() : '';
+      const parsed = parseFilename(d.filename);
+      // TMDB failure is non-fatal — we still return the item.
+      let tmdb: { poster?: string; backdrop?: string; overview?: string } | null = null;
+      try {
+        tmdb = await tmdbPoster(parsed.title, parsed.year, parsed.isSeries);
+      } catch (e) {
+        app.log.warn({ err: (e as Error).message, name: parsed.title }, 'tmdb lookup failed');
+      }
+      const art = normalizeArtworkSync({ poster: tmdb?.poster, backdrop: tmdb?.backdrop });
+      return {
+        id: d.id,
+        filename: d.filename,
+        niceName: parsed.title,
+        year: parsed.year,
+        season: parsed.season,
+        episode: parsed.episode,
+        isSeries: parsed.isSeries,
+        ...art,
+        overview: tmdb?.overview,
+        filesize: d.filesize,
+        download: d.download,
+        generated: d.generated,
+        ext,
+        isMKV: ext === 'mkv',
+      };
+    });
 
-    return { count: enriched.length, page: q.page, items: enriched };
+    const out = { count: enriched.length, page: q.page, items: enriched };
+    responseCache.set(cacheKey, out);
+    return out;
   });
 };
 
@@ -126,9 +153,6 @@ interface ParsedName {
   isSeries: boolean;
 }
 
-// Common release-tag tokens that mark the end of the title segment in a
-// scene-style filename. The earliest occurrence in the cleaned string is
-// where the title stops.
 const RELEASE_CUTS = [
   '1080p', '2160p', '4k', '720p', '480p',
   'webrip', 'web-rl', 'web-dl', 'webdl', 'bluray', 'brrip', 'bdrip', 'hdrip', 'hdtv', 'dvdrip',
@@ -142,16 +166,13 @@ const RELEASE_CUTS = [
 const SERIES_RX = /\b[Ss](\d{1,2})[._\- ]?[Ee](\d{1,3})\b|\b(\d{1,2})x(\d{2})\b|\bSeason[ ._-]?(\d{1,2})\b/;
 
 function parseFilename(raw: string): ParsedName {
-  // Strip directory and extension.
   let s = raw.split('/').pop() ?? raw;
   if (s.includes('.')) s = s.substring(0, s.lastIndexOf('.'));
   s = s.replace(/[._]+/g, ' ').replace(/\s+/g, ' ').trim();
 
-  // Year first — used to truncate the title at the year boundary too.
   const yearMatch = s.match(/\b(19|20)\d{2}\b/);
   const year = yearMatch ? Number(yearMatch[0]) : undefined;
 
-  // Series markers.
   const ser = s.match(SERIES_RX);
   let season: number | undefined;
   let episode: number | undefined;
@@ -169,7 +190,6 @@ function parseFilename(raw: string): ParsedName {
     }
   }
 
-  // Find the earliest cut: release tag, year, or series marker.
   const lower = s.toLowerCase();
   let cutAt = s.length;
   for (const c of RELEASE_CUTS) {
@@ -190,10 +210,9 @@ function parseFilename(raw: string): ParsedName {
 async function tmdbPoster(name: string, year: number | undefined, isSeries: boolean): Promise<{ poster?: string; backdrop?: string; overview?: string } | null> {
   if (!env.TMDB_API_KEY) return null;
   const key = `tmdb::${name}::${year ?? ''}::${isSeries ? 'tv' : 'mv'}`;
-  const cached = cache.get(key) as { poster?: string; backdrop?: string; overview?: string } | undefined;
+  const cached = tmdbCache.get(key);
   if (cached !== undefined) return cached;
 
-  // Probe the most likely kind first based on filename heuristics, then the other.
   const tries: Array<{ kind: 'movie' | 'tv'; url: string }> = isSeries
     ? [
         { kind: 'tv',    url: `https://api.themoviedb.org/3/search/tv?api_key=${env.TMDB_API_KEY}&query=${encodeURIComponent(name)}${year ? `&first_air_date_year=${year}` : ''}` },
@@ -207,9 +226,15 @@ async function tmdbPoster(name: string, year: number | undefined, isSeries: bool
   for (const t of tries) {
     try {
       const ac = new AbortController();
-      const to = setTimeout(() => ac.abort(), 5_000);
+      const to = setTimeout(() => ac.abort(), TMDB_TIMEOUT_MS);
       try {
         const { statusCode, body } = await request(t.url, { signal: ac.signal });
+        if (statusCode === 429) {
+          // Rate limited — give up for this item; cache the miss briefly so
+          // we don't hammer.
+          tmdbCache.set(key, null, 30 * 1000);
+          return null;
+        }
         if (statusCode < 200 || statusCode >= 300) continue;
         const json = await body.json() as { results?: Array<{ poster_path?: string; backdrop_path?: string; overview?: string }> };
         const hit = json.results?.[0];
@@ -219,13 +244,31 @@ async function tmdbPoster(name: string, year: number | undefined, isSeries: bool
           backdrop: hit.backdrop_path ? `https://image.tmdb.org/t/p/w1280${hit.backdrop_path}` : undefined,
           overview: hit.overview,
         };
-        cache.set(key, out);
+        tmdbCache.set(key, out);
         return out;
       } finally {
         clearTimeout(to);
       }
     } catch { /* next */ }
   }
-  cache.set(key, null);
+  tmdbCache.set(key, null);
   return null;
+}
+
+/**
+ * Like Promise.all(arr.map(fn)) but never runs more than `concurrency`
+ * promises at once. Preserves output order.
+ */
+async function mapWithConcurrency<T, R>(items: T[], concurrency: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (true) {
+      const i = cursor++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i]!, i);
+    }
+  });
+  await Promise.all(workers);
+  return out;
 }
