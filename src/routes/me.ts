@@ -5,6 +5,7 @@
 import { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { db } from '../db/pool.js';
+import { rdUserInfo, rdValidateToken } from '../lib/debrid.js';
 
 const NewProfile = z.object({
   id: z.string().uuid(),
@@ -83,16 +84,33 @@ export const meRoutes: FastifyPluginAsync = async (app) => {
     return { tokens: r.rows };
   });
 
-  app.put('/me/debrid/:provider', async (req) => {
+  app.put('/me/debrid/:provider', async (req, reply) => {
     const params = z.object({ provider: z.enum(['RD', 'AD', 'PM']) }).parse(req.params);
-    const body = z.object({ token: z.string().min(8).max(400) }).parse(req.body);
+    const body = z.object({
+      token: z.string().min(8).max(400),
+      // Allow callers to opt out of validation (e.g. when offline or for AD/PM).
+      skipValidation: z.boolean().optional(),
+    }).parse(req.body);
+
+    let userInfo: Awaited<ReturnType<typeof rdValidateToken>> | null = null;
+    if (params.provider === 'RD' && !body.skipValidation) {
+      try {
+        userInfo = await rdValidateToken(body.token);
+      } catch (e) {
+        reply.code(400);
+        return { error: 'token rejected by Real-Debrid', details: (e as Error).message };
+      }
+    }
+
     await db.query(
       `INSERT INTO debrid_tokens (device_id, provider, token)
        VALUES ($1, $2, $3)
        ON CONFLICT (device_id, provider) DO UPDATE SET token = EXCLUDED.token, added_at = NOW()`,
       [req.deviceId, params.provider, body.token]
     );
-    return { ok: true };
+    return userInfo
+      ? { ok: true, user: { username: userInfo.username, expiration: userInfo.expiration, type: userInfo.type } }
+      : { ok: true };
   });
 
   app.delete('/me/debrid/:provider', async (req) => {
@@ -102,5 +120,42 @@ export const meRoutes: FastifyPluginAsync = async (app) => {
       [req.deviceId, params.provider]
     );
     return { ok: true };
+  });
+
+  // Live token-health check. iOS shows "Real-Debrid premium until <date>"
+  // or surfaces an expired/invalid token to the user.
+  app.get('/me/debrid/:provider/test', async (req, reply) => {
+    const params = z.object({ provider: z.enum(['RD', 'AD', 'PM']) }).parse(req.params);
+    const tok = await db.query<{ token: string }>(
+      'SELECT token FROM debrid_tokens WHERE device_id = $1 AND provider = $2',
+      [req.deviceId, params.provider]
+    );
+    const token = tok.rows[0]?.token;
+    if (!token) {
+      reply.code(404);
+      return { ok: false, error: 'no token configured' };
+    }
+    if (params.provider !== 'RD') {
+      reply.code(501);
+      return { ok: false, error: `${params.provider} test not yet implemented` };
+    }
+    try {
+      const user = await rdUserInfo(token);
+      if (!user) {
+        reply.code(401);
+        return { ok: false, error: 'token rejected by Real-Debrid' };
+      }
+      return {
+        ok: true,
+        provider: 'RD',
+        username: user.username,
+        type: user.type,
+        premiumSecondsRemaining: user.premium,
+        expiration: user.expiration,
+      };
+    } catch (e) {
+      reply.code(502);
+      return { ok: false, error: 'Real-Debrid unreachable', details: (e as Error).message };
+    }
   });
 };

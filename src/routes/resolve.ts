@@ -6,7 +6,9 @@
 import { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { db } from '../db/pool.js';
-import { rdResolve, rdAddMagnet, rdSelectAllFiles, rdTorrentInfo } from '../lib/debrid.js';
+import {
+  rdResolve, rdAddMagnet, rdSelectVideoFiles, rdWaitForTorrent,
+} from '../lib/debrid.js';
 
 export const resolveRoutes: FastifyPluginAsync = async (app) => {
   app.post('/resolve', async (req, reply) => {
@@ -16,6 +18,10 @@ export const resolveRoutes: FastifyPluginAsync = async (app) => {
       url: z.string().url().optional(),
       magnet: z.string().regex(/^magnet:\?/).optional(),
       infoHash: z.string().regex(/^[0-9a-fA-F]{40}$/).optional(),
+      // How long the server may wait for a magnet to finish before giving up
+      // and returning 202. iOS picks small values (e.g. 4-8s) so the user
+      // doesn't sit on a spinner forever.
+      maxWaitMs: z.number().int().min(0).max(30_000).optional(),
     }).refine(d => d.url || d.magnet || d.infoHash, {
       message: 'one of url, magnet, infoHash is required',
     }).parse(req.body);
@@ -38,35 +44,32 @@ export const resolveRoutes: FastifyPluginAsync = async (app) => {
     try {
       if (body.url) {
         const out = await rdResolve(token, body.url);
-        return { directURL: out.directURL, filename: out.filename, sizeBytes: out.sizeBytes };
+        return { directURL: out.directURL, filename: out.filename, sizeBytes: out.sizeBytes, mimeType: out.mimeType };
       }
-      if (body.magnet) {
-        const id = await rdAddMagnet(token, body.magnet);
-        await rdSelectAllFiles(token, id);
-        const info = await rdTorrentInfo(token, id);
-        const link = info.links?.[0];
-        if (!link) {
-          reply.code(202);
-          return { status: info.status, message: 'magnet queued, no direct link yet — retry shortly' };
-        }
-        const out = await rdResolve(token, link);
-        return { directURL: out.directURL, filename: out.filename, sizeBytes: out.sizeBytes };
+      const magnet = body.magnet ?? `magnet:?xt=urn:btih:${body.infoHash}`;
+      const id = await rdAddMagnet(token, magnet);
+      await rdSelectVideoFiles(token, id);
+      const info = await rdWaitForTorrent(token, id, body.maxWaitMs ?? 6_000);
+      const link = info.links?.[0];
+      if (!link) {
+        reply.code(202);
+        return {
+          status: info.status,
+          progress: info.progress ?? 0,
+          torrentId: id,
+          message: info.status === 'downloaded'
+            ? 'torrent downloaded but no direct link emitted yet — retry shortly'
+            : 'magnet not yet ready on Real-Debrid — retry shortly',
+        };
       }
-      if (body.infoHash) {
-        const magnet = `magnet:?xt=urn:btih:${body.infoHash}`;
-        const id = await rdAddMagnet(token, magnet);
-        await rdSelectAllFiles(token, id);
-        const info = await rdTorrentInfo(token, id);
-        const link = info.links?.[0];
-        if (!link) {
-          reply.code(202);
-          return { status: info.status, message: 'magnet queued, no direct link yet — retry shortly' };
-        }
-        const out = await rdResolve(token, link);
-        return { directURL: out.directURL, filename: out.filename, sizeBytes: out.sizeBytes };
-      }
-      reply.code(400);
-      return { error: 'no resolvable input' };
+      const out = await rdResolve(token, link);
+      return {
+        directURL: out.directURL,
+        filename: out.filename,
+        sizeBytes: out.sizeBytes,
+        mimeType: out.mimeType,
+        torrentId: id,
+      };
     } catch (e) {
       reply.code(502);
       return { error: 'resolve failed', details: (e as Error).message };
