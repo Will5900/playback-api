@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { db } from '../db/pool.js';
 import { env } from '../lib/env.js';
 import { TTLCache } from '../lib/cache.js';
+import { normalizeArtworkSync } from '../lib/artwork.js';
 
 const cache = new TTLCache<unknown>(10 * 60 * 1000); // 10 min
 
@@ -28,8 +29,12 @@ interface EnrichedRD {
   season?: number;
   episode?: number;
   isSeries: boolean;
+  // All four point at the same URL — see lib/artwork.ts.
+  posterURL?: string;
+  backdropURL?: string;
   poster?: string;
   backdrop?: string;
+  background?: string;
   overview?: string;
   filesize: number;
   download: string;
@@ -69,7 +74,8 @@ export const rdRoutes: FastifyPluginAsync = async (app) => {
       downloads.map(async (d): Promise<EnrichedRD> => {
         const ext = d.filename.includes('.') ? d.filename.split('.').pop()!.toLowerCase() : '';
         const parsed = parseFilename(d.filename);
-        const poster = await tmdbPoster(parsed.title, parsed.year, parsed.isSeries);
+        const tmdb = await tmdbPoster(parsed.title, parsed.year, parsed.isSeries);
+        const art = normalizeArtworkSync({ poster: tmdb?.poster, backdrop: tmdb?.backdrop });
         return {
           id: d.id,
           filename: d.filename,
@@ -78,9 +84,8 @@ export const rdRoutes: FastifyPluginAsync = async (app) => {
           season: parsed.season,
           episode: parsed.episode,
           isSeries: parsed.isSeries,
-          poster: poster?.poster,
-          backdrop: poster?.backdrop,
-          overview: poster?.overview,
+          ...art,
+          overview: tmdb?.overview,
           filesize: d.filesize,
           download: d.download,
           generated: d.generated,

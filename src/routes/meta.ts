@@ -10,6 +10,7 @@ import { db } from '../db/pool.js';
 import { baseURL, fetchMeta, supportsResource, AddonManifest, fetchManifest } from '../lib/stremio.js';
 import { TTLCache } from '../lib/cache.js';
 import { findByImdbID } from '../lib/tmdb.js';
+import { normalizeArtwork } from '../lib/artwork.js';
 
 const cache = new TTLCache<unknown>(15 * 60 * 1000); // 15 min
 
@@ -49,7 +50,12 @@ export const metaRoutes: FastifyPluginAsync = async (app) => {
                 enriched.description = enriched.description ?? tmdb.overview;
               }
             }
-            return { meta: enriched, source: row.manifest_url };
+            const art = await normalizeArtwork({
+              titleId: params.id,
+              poster: enriched.poster,
+              background: enriched.background,
+            });
+            return { meta: { ...enriched, ...art }, source: row.manifest_url };
           }
         } catch (e) {
           app.log.warn({ err: (e as Error).message, addon: row.manifest_url }, 'meta failed');
@@ -60,14 +66,18 @@ export const metaRoutes: FastifyPluginAsync = async (app) => {
       if (params.id.startsWith('tt')) {
         const tmdb = await findByImdbID(params.id);
         if (tmdb) {
+          const art = await normalizeArtwork({
+            titleId: params.id,
+            poster: tmdb.poster,
+            backdrop: tmdb.backdrop,
+          });
           return {
             meta: {
               id: params.id,
               type: params.type,
               name: params.id,
-              poster: tmdb.poster,
-              background: tmdb.backdrop,
               description: tmdb.overview,
+              ...art,
             },
             source: 'tmdb',
           };

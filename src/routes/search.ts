@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { db } from '../db/pool.js';
 import { baseURL, fetchCatalog, StremioMetaPreview } from '../lib/stremio.js';
 import { TTLCache } from '../lib/cache.js';
+import { normalizeArtwork } from '../lib/artwork.js';
 
 const cache = new TTLCache<StremioMetaPreview[]>(2 * 60 * 1000); // 2 min per (addon, query)
 
@@ -53,6 +54,15 @@ export const searchRoutes: FastifyPluginAsync = async (app) => {
       }
     }));
 
-    return { query: q.q, count: merged.length, results: merged.slice(0, 80) };
+    const top = merged.slice(0, 80);
+    const results = await Promise.all(top.map(async (m) => {
+      const art = await normalizeArtwork({
+        titleId: m.id,
+        poster: m.poster,
+        background: m.background,
+      });
+      return { ...m, ...art };
+    }));
+    return { query: q.q, count: merged.length, results };
   });
 };

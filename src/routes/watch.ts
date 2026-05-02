@@ -6,6 +6,7 @@
 import { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { db } from '../db/pool.js';
+import { normalizeArtwork } from '../lib/artwork.js';
 
 const Event = z.object({
   profileId: z.string().uuid().optional(),
@@ -98,7 +99,7 @@ export const watchRoutes: FastifyPluginAsync = async (app) => {
       ]
     );
 
-    const items = r.rows
+    const filtered = r.rows
       .filter((row) => {
         if (row.kind === 'finish') return false;
         if (row.positionSec != null && row.durationSec && row.durationSec > 0) {
@@ -107,8 +108,15 @@ export const watchRoutes: FastifyPluginAsync = async (app) => {
         return true;
       })
       .sort((a, b) => b.occurredAt.getTime() - a.occurredAt.getTime())
-      .slice(0, q.limit)
-      .map((row) => ({
+      .slice(0, q.limit);
+
+    const items = await Promise.all(filtered.map(async (row) => {
+      const art = await normalizeArtwork({
+        titleId: row.titleId,
+        posterURL:  pickString(row.metadata, 'posterURL', 'poster', 'poster_url'),
+        backdropURL: pickString(row.metadata, 'backdropURL', 'backdrop', 'background', 'backdrop_url'),
+      });
+      return {
         titleId: row.titleId,
         positionSec: row.positionSec,
         durationSec: row.durationSec,
@@ -116,12 +124,13 @@ export const watchRoutes: FastifyPluginAsync = async (app) => {
         // Surface common metadata fields at the top level for iOS Codable
         // convenience while preserving the full bag under `metadata`.
         name:    pickString(row.metadata, 'name'),
-        posterURL: pickString(row.metadata, 'posterURL', 'poster', 'poster_url'),
         type:    pickString(row.metadata, 'type'),
         season:  pickNumber(row.metadata, 'season'),
         episode: pickNumber(row.metadata, 'episode'),
+        ...art,
         metadata: row.metadata ?? undefined,
-      }));
+      };
+    }));
 
     return { items };
   });
@@ -157,22 +166,28 @@ export const watchRoutes: FastifyPluginAsync = async (app) => {
       ]
     );
 
-    const items = r.rows
-      .sort((a, b) => b.finishedAt.getTime() - a.finishedAt.getTime())
-      .map((row) => ({
+    const sorted = r.rows.sort((a, b) => b.finishedAt.getTime() - a.finishedAt.getTime());
+    const items = await Promise.all(sorted.map(async (row) => {
+      const art = await normalizeArtwork({
+        titleId: row.titleId,
+        posterURL:  pickString(row.metadata, 'posterURL', 'poster', 'poster_url'),
+        backdropURL: pickString(row.metadata, 'backdropURL', 'backdrop', 'background', 'backdrop_url'),
+      });
+      return {
         titleId: row.titleId,
         finishedAt: row.finishedAt,
-        name:    pickString(row.metadata, 'name'),
-        posterURL: pickString(row.metadata, 'posterURL', 'poster', 'poster_url'),
-        type:    pickString(row.metadata, 'type'),
-      }));
+        name: pickString(row.metadata, 'name'),
+        type: pickString(row.metadata, 'type'),
+        ...art,
+      };
+    }));
     return { items };
   });
 
   // Saved library
   app.get('/watch/saved', async (req) => {
     const q = z.object({ profileId: z.string().uuid() }).parse(req.query);
-    const r = await db.query(
+    const r = await db.query<SavedRow>(
       `SELECT title_id AS "titleId", name, poster_url AS "posterURL",
               year, genre, match_score AS "matchScore",
               added_at AS "addedAt"
@@ -181,7 +196,8 @@ export const watchRoutes: FastifyPluginAsync = async (app) => {
         ORDER BY added_at DESC`,
       [req.deviceId, q.profileId]
     );
-    return { items: r.rows };
+    const items = await Promise.all(r.rows.map(enrichSavedRow));
+    return { items };
   });
 
   // Single-title check — lets iOS render the heart icon without pulling the
@@ -189,7 +205,7 @@ export const watchRoutes: FastifyPluginAsync = async (app) => {
   app.get('/watch/saved/:titleId', async (req, reply) => {
     const params = z.object({ titleId: z.string().min(1) }).parse(req.params);
     const q = z.object({ profileId: z.string().uuid() }).parse(req.query);
-    const r = await db.query(
+    const r = await db.query<SavedRow>(
       `SELECT title_id AS "titleId", name, poster_url AS "posterURL",
               year, genre, match_score AS "matchScore",
               added_at AS "addedAt"
@@ -201,7 +217,7 @@ export const watchRoutes: FastifyPluginAsync = async (app) => {
       reply.code(404);
       return { saved: false };
     }
-    return { saved: true, item: r.rows[0] };
+    return { saved: true, item: await enrichSavedRow(r.rows[0]!) };
   });
 
   app.put('/watch/saved/:titleId', async (req) => {
@@ -241,6 +257,29 @@ export const watchRoutes: FastifyPluginAsync = async (app) => {
     return { ok: true };
   });
 };
+
+interface SavedRow {
+  titleId: string;
+  name: string;
+  posterURL: string | null;
+  year: number | null;
+  genre: string | null;
+  matchScore: number | null;
+  addedAt: Date;
+}
+
+async function enrichSavedRow(row: SavedRow) {
+  const art = await normalizeArtwork({ titleId: row.titleId, posterURL: row.posterURL });
+  return {
+    titleId: row.titleId,
+    name: row.name,
+    year: row.year,
+    genre: row.genre,
+    matchScore: row.matchScore,
+    addedAt: row.addedAt,
+    ...art,
+  };
+}
 
 async function insertEvent(deviceId: string, e: z.infer<typeof Event>) {
   await db.query(
