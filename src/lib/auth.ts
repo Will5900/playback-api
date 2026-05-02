@@ -5,6 +5,7 @@
 //
 
 import { FastifyPluginAsync } from 'fastify';
+import fp from 'fastify-plugin';
 import { randomUUID } from 'node:crypto';
 import { db } from '../db/pool.js';
 
@@ -15,7 +16,7 @@ declare module 'fastify' {
   }
 }
 
-export const authPlugin: FastifyPluginAsync = async (app) => {
+const plugin: FastifyPluginAsync = async (app) => {
   app.addHook('onRequest', async (req, reply) => {
     if (req.url.startsWith('/healthz')) return;
 
@@ -55,3 +56,7 @@ export const authPlugin: FastifyPluginAsync = async (app) => {
     req.installToken = token;
   });
 };
+
+// fastify-plugin breaks encapsulation so the onRequest hook applies globally
+// to routes registered AFTER this plugin in server.ts.
+export const authPlugin = fp(plugin, { name: 'auth' });
