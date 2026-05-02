@@ -14,6 +14,7 @@ import { authPlugin } from './lib/auth.js';
 
 import { healthRoutes } from './routes/health.js';
 import { meRoutes } from './routes/me.js';
+import { rdRoutes } from './routes/rd.js';
 import { addonRoutes } from './routes/addons.js';
 import { searchRoutes } from './routes/search.js';
 import { metaRoutes } from './routes/meta.js';
@@ -45,6 +46,7 @@ async function main() {
   // Routes
   await app.register(healthRoutes);
   await app.register(meRoutes,        { prefix: '/v1' });
+  await app.register(rdRoutes,        { prefix: '/v1' });
   await app.register(addonRoutes,     { prefix: '/v1' });
   await app.register(searchRoutes,    { prefix: '/v1' });
   await app.register(metaRoutes,      { prefix: '/v1' });
