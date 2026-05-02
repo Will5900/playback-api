@@ -16,6 +16,7 @@ import { healthRoutes } from './routes/health.js';
 import { meRoutes } from './routes/me.js';
 import { rdRoutes } from './routes/rd.js';
 import { addonRoutes } from './routes/addons.js';
+import { catalogRoutes } from './routes/catalog.js';
 import { searchRoutes } from './routes/search.js';
 import { metaRoutes } from './routes/meta.js';
 import { streamRoutes } from './routes/streams.js';
@@ -48,6 +49,7 @@ async function main() {
   await app.register(meRoutes,        { prefix: '/v1' });
   await app.register(rdRoutes,        { prefix: '/v1' });
   await app.register(addonRoutes,     { prefix: '/v1' });
+  await app.register(catalogRoutes,   { prefix: '/v1' });
   await app.register(searchRoutes,    { prefix: '/v1' });
   await app.register(metaRoutes,      { prefix: '/v1' });
   await app.register(streamRoutes,    { prefix: '/v1' });
