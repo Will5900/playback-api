@@ -56,3 +56,20 @@ curl -fsS -H "${H}" "${BASE}/v1/_debug/addons" \
 echo
 echo '=== /v1/catalogs (what the homepage should be querying) ==='
 curl -fsS -H "${H}" "${BASE}/v1/catalogs" | jq '.catalogs'
+
+echo
+echo '=== raw manifest catalog counts (does the addon actually advertise any?) ==='
+for URL in \
+  https://watchhub.strem.io/manifest.json \
+  https://mediafusion.elfhosted.com/manifest.json \
+  https://torrentio.strem.fun/manifest.json \
+  https://comet.elfhosted.com/manifest.json \
+  https://opensubtitles-v3.strem.io/manifest.json
+do
+  COUNT=$(curl -fsS --max-time 8 "${URL}" 2>/dev/null | jq '.catalogs // [] | length')
+  printf '%-55s catalogs=%s\n' "${URL}" "${COUNT:-fetch-failed}"
+done
+
+echo
+echo '=== refresh-stale (re-fetch any manifest > 6h old) ==='
+curl -fsS -H "${H}" -X POST "${BASE}/v1/addons/refresh-stale" | jq '.'
