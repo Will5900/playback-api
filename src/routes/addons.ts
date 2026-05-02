@@ -18,7 +18,17 @@ export const addonRoutes: FastifyPluginAsync = async (app) => {
         ORDER BY added_at DESC`,
       [req.deviceId]
     );
-    return { addons: r.rows };
+    // Stremio addons can list resources as either bare strings or
+    // { name, types, idPrefixes } objects — normalise to plain strings
+    // so the iOS Codable contract stays simple.
+    const addons = r.rows.map((row: any) => ({
+      ...row,
+      resources: Array.isArray(row.resources)
+        ? row.resources.map((x: any) => typeof x === 'string' ? x : (x?.name ?? '')).filter((x: string) => x)
+        : [],
+      types: Array.isArray(row.types) ? row.types : [],
+    }));
+    return { addons };
   });
 
   app.post('/addons', async (req, reply) => {
