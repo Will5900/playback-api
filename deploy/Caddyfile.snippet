@@ -1,0 +1,23 @@
+# Append this block to /opt/tonebreak-site/deploy/Caddyfile, then:
+#   docker compose -f /opt/tonebreak-site/docker-compose.prod.yml exec caddy caddy reload --config /etc/caddy/Caddyfile
+# Caddy will request a Let's Encrypt cert for api.tonebreak.com on the next request.
+#
+# Requires:
+#   * Cloudflare DNS A record: api → 77.68.124.169 (DNS only, grey cloud)
+#   * playback-api container reachable via the shared tonebreak-prod_default network
+
+api.tonebreak.com {
+	encode zstd gzip
+	reverse_proxy playback-api:4000
+
+	# Slightly tighter rate-limit safety net; per-token limiting also lives in Fastify.
+	@bursty path /v1/search /v1/streams* /v1/resolve
+	header @bursty Cache-Control "no-store"
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}

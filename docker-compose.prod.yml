@@ -1,0 +1,43 @@
+# Production stack for api.tonebreak.com.
+#
+# Joins the existing tonebreak-prod compose network so we can share the
+# Postgres container with the website. Caddy on the website stack also gains
+# an api.tonebreak.com block — see deploy/Caddyfile.snippet.
+#
+# Usage on server (after adding api A record + Caddyfile snippet):
+#   git clone <this repo> /opt/playback-api
+#   cd /opt/playback-api
+#   cp .env.example .env && edit
+#   docker compose -f docker-compose.prod.yml up -d --build
+#   # Caddy on tonebreak side picks up api.tonebreak.com -> playback-api:4000
+
+name: playback-prod
+
+services:
+  api:
+    container_name: playback-api
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      LOG_LEVEL: info
+      # Reuse the existing Postgres container from tonebreak-prod, but in a
+      # *different* database. The user/password come from the shared .env on
+      # the host. Override here if you want a dedicated instance.
+      DATABASE_URL: postgresql://playback:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/playback
+      INSTALL_TOKEN_PEPPER: ${INSTALL_TOKEN_PEPPER:?Set INSTALL_TOKEN_PEPPER}
+      TMDB_API_KEY: ${TMDB_API_KEY:-}
+      FANART_API_KEY: ${FANART_API_KEY:-}
+      OPENSUBTITLES_API_KEY: ${OPENSUBTITLES_API_KEY:-}
+      OPENSUBTITLES_USER_AGENT: ${OPENSUBTITLES_USER_AGENT:-Playback v0.1}
+      CORS_ORIGIN: ${CORS_ORIGIN:-*}
+    networks:
+      - tonebreak-prod_default
+      - default
+
+networks:
+  tonebreak-prod_default:
+    external: true

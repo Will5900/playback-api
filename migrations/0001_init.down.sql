@@ -1,0 +1,6 @@
+DROP TABLE IF EXISTS saved_titles;
+DROP TABLE IF EXISTS watch_events;
+DROP TABLE IF EXISTS debrid_tokens;
+DROP TABLE IF EXISTS addons;
+DROP TABLE IF EXISTS profiles;
+DROP TABLE IF EXISTS devices;
