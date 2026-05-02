@@ -119,15 +119,16 @@ async function tmdbPoster(name: string, year?: number): Promise<{ poster?: strin
   const cached = cache.get(key) as { poster?: string; backdrop?: string; overview?: string } | undefined;
   if (cached !== undefined) return cached;
 
-  // Try movie first, then TV
-  const tries: Array<{ kind: 'movie' | 'tv'; url: string }> = [
-    { kind: 'movie', url: `https://api.themoviedb.org/3/search/movie?api_key=${env.TMDB_API_KEY}&query=${encodeURIComponent(name)}${year ? `&year=${year}` : ''}` },
-    { kind: 'tv',    url: `https://api.themoviedb.org/3/search/tv?api_key=${env.TMDB_API_KEY}&query=${encodeURIComponent(name)}${year ? `&first_air_date_year=${year}` : ''}` },
+  const tries: Array<string> = [
+    `https://api.themoviedb.org/3/search/movie?api_key=${env.TMDB_API_KEY}&query=${encodeURIComponent(name)}${year ? `&year=${year}` : ''}`,
+    `https://api.themoviedb.org/3/search/tv?api_key=${env.TMDB_API_KEY}&query=${encodeURIComponent(name)}${year ? `&first_air_date_year=${year}` : ''}`,
   ];
 
-  for (const t of tries) {
+  for (const url of tries) {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 5_000);
     try {
-      const { statusCode, body } = await request(t.url);
+      const { statusCode, body } = await request(url, { signal: ac.signal });
       if (statusCode < 200 || statusCode >= 300) continue;
       const json = await body.json() as { results?: Array<{ poster_path?: string; backdrop_path?: string; overview?: string }> };
       const hit = json.results?.[0];
@@ -140,6 +141,7 @@ async function tmdbPoster(name: string, year?: number): Promise<{ poster?: strin
       cache.set(key, out);
       return out;
     } catch { /* next */ }
+    finally { clearTimeout(t); }
   }
   cache.set(key, null);
   return null;
