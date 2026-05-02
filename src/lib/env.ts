@@ -17,6 +17,11 @@ const schema = z.object({
   OPENSUBTITLES_API_KEY: z.string().optional(),
   OPENSUBTITLES_USER_AGENT: z.string().default('Playback v0.1'),
 
+  TRAKT_CLIENT_ID: z.string().optional(),
+  TRAKT_CLIENT_SECRET: z.string().optional(),
+  TRAKT_REDIRECT_URI: z.string().optional(),
+  TRAKT_APP_REDIRECT: z.string().default('playback://trakt-callback'),
+
   CORS_ORIGIN: z.string().default('*'),
 });
 

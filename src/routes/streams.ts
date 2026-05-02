@@ -9,7 +9,7 @@ import { db } from '../db/pool.js';
 import {
   AddonManifest, baseURL, fetchStreams, StremioStream, supportsResource,
 } from '../lib/stremio.js';
-import { rdInstantAvailability } from '../lib/debrid.js';
+import { rdInstantAvailability, adInstantAvailability, pmInstantAvailability } from '../lib/debrid.js';
 
 interface RankedStream extends StremioStream {
   _addon: string;
@@ -45,6 +45,8 @@ export const streamRoutes: FastifyPluginAsync = async (app) => {
       ),
     ]);
     const rdToken = debridR.rows.find(r => r.provider === 'RD')?.token;
+    const adToken = debridR.rows.find(r => r.provider === 'AD')?.token;
+    const pmToken = debridR.rows.find(r => r.provider === 'PM')?.token;
 
     const collected: RankedStream[] = [];
     await Promise.all(addonsR.rows.map(async (row) => {
@@ -64,12 +66,16 @@ export const streamRoutes: FastifyPluginAsync = async (app) => {
       }
     }));
 
-    // Cache-check infoHashes against RD if a token is present.
-    if (rdToken) {
-      const hashes = collected.map(s => s.infoHash).filter((h): h is string => !!h);
-      const unique = [...new Set(hashes.map(h => h.toLowerCase()))];
-      const checks = await Promise.all(unique.map(async (h) => [h, await rdInstantAvailability(rdToken, h)] as const));
-      const cachedSet = new Set(checks.filter(([, v]) => v).map(([h]) => h));
+    // Cache-check infoHashes against any configured debrid provider.
+    const hashes = collected.map(s => s.infoHash).filter((h): h is string => !!h);
+    const unique = [...new Set(hashes.map(h => h.toLowerCase()))];
+    if (unique.length > 0) {
+      const cachedSet = new Set<string>();
+      await Promise.all(unique.map(async (h) => {
+        if (rdToken && await rdInstantAvailability(rdToken, h)) cachedSet.add(h);
+        else if (adToken && await adInstantAvailability(adToken, h)) cachedSet.add(h);
+        else if (pmToken && await pmInstantAvailability(pmToken, h)) cachedSet.add(h);
+      }));
       for (const s of collected) {
         if (s.infoHash && cachedSet.has(s.infoHash.toLowerCase())) s._cached = true;
       }

@@ -6,7 +6,10 @@
 import { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { db } from '../db/pool.js';
-import { rdResolve, rdAddMagnet, rdSelectAllFiles, rdTorrentInfo } from '../lib/debrid.js';
+import {
+  rdResolve, rdAddMagnet, rdSelectAllFiles, rdTorrentInfo,
+  adResolve, pmResolve,
+} from '../lib/debrid.js';
 
 export const resolveRoutes: FastifyPluginAsync = async (app) => {
   app.post('/resolve', async (req, reply) => {
@@ -30,46 +33,51 @@ export const resolveRoutes: FastifyPluginAsync = async (app) => {
       return { error: `no ${body.provider} token configured` };
     }
 
-    if (body.provider !== 'RD') {
-      reply.code(501);
-      return { error: `${body.provider} not yet implemented` };
-    }
-
     try {
-      if (body.url) {
-        const out = await rdResolve(token, body.url);
+      if (body.provider === 'RD') {
+        return await resolveRD(token, body, reply);
+      }
+      if (body.provider === 'AD') {
+        // AllDebrid prefers a hoster URL or a magnet/hash converted to magnet.
+        const link = body.url
+          ?? body.magnet
+          ?? (body.infoHash ? `magnet:?xt=urn:btih:${body.infoHash}` : undefined);
+        if (!link) { reply.code(400); return { error: 'no link' }; }
+        const out = await adResolve(token, link);
         return { directURL: out.directURL, filename: out.filename, sizeBytes: out.sizeBytes };
       }
-      if (body.magnet) {
-        const id = await rdAddMagnet(token, body.magnet);
-        await rdSelectAllFiles(token, id);
-        const info = await rdTorrentInfo(token, id);
-        const link = info.links?.[0];
-        if (!link) {
-          reply.code(202);
-          return { status: info.status, message: 'magnet queued, no direct link yet — retry shortly' };
-        }
-        const out = await rdResolve(token, link);
-        return { directURL: out.directURL, filename: out.filename, sizeBytes: out.sizeBytes };
-      }
-      if (body.infoHash) {
-        const magnet = `magnet:?xt=urn:btih:${body.infoHash}`;
-        const id = await rdAddMagnet(token, magnet);
-        await rdSelectAllFiles(token, id);
-        const info = await rdTorrentInfo(token, id);
-        const link = info.links?.[0];
-        if (!link) {
-          reply.code(202);
-          return { status: info.status, message: 'magnet queued, no direct link yet — retry shortly' };
-        }
-        const out = await rdResolve(token, link);
+      if (body.provider === 'PM') {
+        const link = body.url
+          ?? body.magnet
+          ?? (body.infoHash ? `magnet:?xt=urn:btih:${body.infoHash}` : undefined);
+        if (!link) { reply.code(400); return { error: 'no link' }; }
+        const out = await pmResolve(token, link);
         return { directURL: out.directURL, filename: out.filename, sizeBytes: out.sizeBytes };
       }
       reply.code(400);
-      return { error: 'no resolvable input' };
+      return { error: 'unknown provider' };
     } catch (e) {
       reply.code(502);
       return { error: 'resolve failed', details: (e as Error).message };
     }
   });
 };
+
+async function resolveRD(token: string, body: { url?: string; magnet?: string; infoHash?: string }, reply: any) {
+  if (body.url) {
+    const out = await rdResolve(token, body.url);
+    return { directURL: out.directURL, filename: out.filename, sizeBytes: out.sizeBytes };
+  }
+  const magnet = body.magnet ?? (body.infoHash ? `magnet:?xt=urn:btih:${body.infoHash}` : undefined);
+  if (!magnet) { reply.code(400); return { error: 'no resolvable input' }; }
+  const id = await rdAddMagnet(token, magnet);
+  await rdSelectAllFiles(token, id);
+  const info = await rdTorrentInfo(token, id);
+  const link = info.links?.[0];
+  if (!link) {
+    reply.code(202);
+    return { status: info.status, message: 'magnet queued, no direct link yet — retry shortly' };
+  }
+  const out = await rdResolve(token, link);
+  return { directURL: out.directURL, filename: out.filename, sizeBytes: out.sizeBytes };
+}
