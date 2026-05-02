@@ -71,5 +71,10 @@ do
 done
 
 echo
+echo '=== devices in DB (most recent first) ==='
+docker exec "${PG}" psql -U playback -d playback -c \
+  "SELECT id, substr(install_token,1,8) AS token, last_seen_at, (SELECT count(*) FROM addons WHERE device_id = devices.id) AS addon_count FROM devices ORDER BY last_seen_at DESC NULLS LAST;"
+
+echo
 echo '=== refresh-stale (re-fetch any manifest > 6h old) ==='
 curl -fsS -H "${H}" -X POST "${BASE}/v1/addons/refresh-stale" | jq '.'
