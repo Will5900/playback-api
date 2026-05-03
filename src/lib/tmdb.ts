@@ -33,6 +33,11 @@ export function stillURL(path: string | null | undefined, size = 'w300'): string
   return `${IMG}/${size}${path}`;
 }
 
+export function logoURL(path: string | null | undefined, size = 'w500'): string | undefined {
+  if (!path) return undefined;
+  return `${IMG}/${size}${path}`;
+}
+
 export function isConfigured(): boolean {
   return !!env.TMDB_API_KEY;
 }
@@ -95,6 +100,7 @@ export interface V2TitleDetail extends V2Title {
   videos: V2Video[] | null;
   certification: string | null;
   numberOfSeasons: number | null;
+  logo: string | null;
 }
 
 // --- TMDB raw types ---
@@ -296,7 +302,8 @@ export async function movieDetail(id: number): Promise<V2TitleDetail | null> {
     };
   }
   const r = await get<Resp>(`/movie/${id}`, {
-    append_to_response: 'credits,similar,release_dates',
+    append_to_response: 'credits,similar,release_dates,images',
+    include_image_language: 'en,null',
   });
   if (!r) return null;
 
@@ -312,6 +319,8 @@ export async function movieDetail(id: number): Promise<V2TitleDetail | null> {
     : null;
   const usRelease = r.release_dates?.results?.find(x => x.iso_3166_1 === 'US');
   const cert = usRelease?.release_dates?.find(rd => rd.certification)?.certification ?? null;
+  const logos = (r as any).images?.logos as Array<{ file_path: string; iso_639_1: string | null }> | undefined;
+  const bestLogo = logos?.find(l => l.iso_639_1 === 'en') ?? logos?.[0];
 
   return {
     ...base,
@@ -321,6 +330,7 @@ export async function movieDetail(id: number): Promise<V2TitleDetail | null> {
     videos: null,
     certification: cert,
     numberOfSeasons: null,
+    logo: logoURL(bestLogo?.file_path) ?? null,
   };
 }
 
@@ -334,7 +344,8 @@ export async function tvDetail(id: number): Promise<V2TitleDetail | null> {
     external_ids?: { imdb_id?: string };
   }
   const r = await get<Resp>(`/tv/${id}`, {
-    append_to_response: 'credits,similar,content_ratings,external_ids',
+    append_to_response: 'credits,similar,content_ratings,external_ids,images',
+    include_image_language: 'en,null',
   });
   if (!r) return null;
 
@@ -351,6 +362,8 @@ export async function tvDetail(id: number): Promise<V2TitleDetail | null> {
     ? await Promise.all(r.similar.results.slice(0, 12).map(s => mapListResult(s as TMDBResult, 'series')))
     : null;
   const cert = r.content_ratings?.results?.find(x => x.iso_3166_1 === 'US')?.rating ?? null;
+  const logos = (r as any).images?.logos as Array<{ file_path: string; iso_639_1: string | null }> | undefined;
+  const bestLogo = logos?.find(l => l.iso_639_1 === 'en') ?? logos?.[0];
 
   let videos: V2Video[] | null = null;
   if (r.number_of_seasons && r.number_of_seasons > 0) {
@@ -365,6 +378,7 @@ export async function tvDetail(id: number): Promise<V2TitleDetail | null> {
     videos,
     certification: cert,
     numberOfSeasons: r.number_of_seasons ?? null,
+    logo: logoURL(bestLogo?.file_path) ?? null,
   };
 }
 
