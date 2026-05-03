@@ -14,6 +14,7 @@ import { existsSync } from 'fs';
 
 const REMUX_DIR = '/tmp/remux';
 const SESSION_TTL_MS = 2 * 60 * 60 * 1000;
+const sessions = new Map<string, { done: boolean }>();
 
 export const remuxRoutes: FastifyPluginAsync = async (app) => {
 
@@ -46,24 +47,28 @@ export const remuxRoutes: FastifyPluginAsync = async (app) => {
       join(dir, 'stream.m3u8'),
     ]);
 
+    sessions.set(id, { done: false });
+
     ffmpeg.stderr.on('data', (chunk: Buffer) => {
       app.log.warn('[remux] ' + chunk.toString().trim());
     });
 
-    ffmpeg.on('close', (code) => {
-      if (code !== 0) app.log.warn(`[remux] ffmpeg exited ${code}`);
+    // Wait for ffmpeg to fully complete so the playlist has #EXT-X-ENDLIST.
+    const completion = new Promise<number | null>((resolve) => {
+      ffmpeg.on('close', (code) => {
+        if (code !== 0) app.log.warn(`[remux] ffmpeg exited ${code}`);
+        const session = sessions.get(id);
+        if (session) session.done = true;
+        resolve(code);
+      });
     });
 
-    // Wait for init segment + first media segment (up to 15s).
+    const timeout = new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), 180_000));
+    const result = await Promise.race([completion, timeout]);
+
     const playlist = join(dir, 'stream.m3u8');
-    const initSeg = join(dir, 'init.mp4');
-    const deadline = Date.now() + 15000;
-    while (Date.now() < deadline) {
-      if (existsSync(playlist) && existsSync(initSeg)) {
-        const content = await readFile(playlist, 'utf-8');
-        if (content.includes('.m4s')) break;
-      }
-      await new Promise(r => setTimeout(r, 500));
+    if (result === 'timeout') {
+      app.log.warn(`[remux] ${id} still running after 180s, returning anyway`);
     }
 
     if (!existsSync(playlist)) {
@@ -73,7 +78,10 @@ export const remuxRoutes: FastifyPluginAsync = async (app) => {
     }
 
     // Schedule cleanup.
-    setTimeout(() => rm(dir, { recursive: true, force: true }).catch(() => {}), SESSION_TTL_MS);
+    setTimeout(() => {
+      rm(dir, { recursive: true, force: true }).catch(() => {});
+      sessions.delete(id);
+    }, SESSION_TTL_MS);
 
     const base = `${req.protocol}://${req.hostname}`;
     return { playlistURL: `${base}/v1/remux/${id}/stream.m3u8` };
@@ -84,7 +92,11 @@ export const remuxRoutes: FastifyPluginAsync = async (app) => {
     const { id } = req.params as { id: string };
     const file = join(REMUX_DIR, id, 'stream.m3u8');
     if (!existsSync(file)) { reply.code(404); return { error: 'not found' }; }
-    const content = await readFile(file, 'utf-8');
+    let content = await readFile(file, 'utf-8');
+    const session = sessions.get(id);
+    if (session?.done && !content.includes('#EXT-X-ENDLIST')) {
+      content = content.trimEnd() + '\n#EXT-X-ENDLIST\n';
+    }
     reply.header('Content-Type', 'application/vnd.apple.mpegurl');
     reply.header('Cache-Control', 'no-cache');
     return content;
