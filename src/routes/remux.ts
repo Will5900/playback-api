@@ -15,10 +15,14 @@ export const remuxRoutes: FastifyPluginAsync = async (app) => {
     }).parse(req.query);
 
     const ffmpeg = spawn('ffmpeg', [
-      '-hide_banner', '-loglevel', 'error',
+      '-hide_banner', '-loglevel', 'warning',
       '-user_agent', 'Playback/1.0',
       '-i', query.url,
-      '-c', 'copy',
+      '-map', '0:v:0',
+      '-map', '0:a:0',
+      '-c:v', 'copy',
+      '-c:a', 'aac',
+      '-b:a', '192k',
       '-f', 'mpegts',
       'pipe:1',
     ]);
