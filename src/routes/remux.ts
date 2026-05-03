@@ -7,7 +7,6 @@
 import { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { spawn } from 'child_process';
-import { request } from 'undici';
 
 export const remuxRoutes: FastifyPluginAsync = async (app) => {
   app.get('/remux', async (req, reply) => {
@@ -15,30 +14,16 @@ export const remuxRoutes: FastifyPluginAsync = async (app) => {
       url: z.string().url(),
     }).parse(req.query);
 
-    const upstream = await request(query.url, {
-      method: 'GET',
-      headers: { 'User-Agent': 'Playback/1.0' },
-    });
-
-    if (upstream.statusCode < 200 || upstream.statusCode >= 400) {
-      reply.code(502);
-      return { error: 'upstream returned ' + upstream.statusCode };
-    }
-
-    const contentLength = upstream.headers['content-length'];
-
     const ffmpeg = spawn('ffmpeg', [
       '-hide_banner', '-loglevel', 'error',
-      '-i', 'pipe:0',
+      '-user_agent', 'Playback/1.0',
+      '-i', query.url,
       '-c', 'copy',
-      '-movflags', 'frag_keyframe+empty_moov+faststart',
+      '-movflags', 'frag_keyframe+empty_moov',
       '-f', 'mp4',
       'pipe:1',
     ]);
 
-    upstream.body.pipe(ffmpeg.stdin);
-
-    ffmpeg.stdin.on('error', () => {});
     ffmpeg.stderr.on('data', (chunk: Buffer) => {
       app.log.warn('[remux] ffmpeg: ' + chunk.toString().trim());
     });
@@ -62,7 +47,6 @@ export const remuxRoutes: FastifyPluginAsync = async (app) => {
 
     req.raw.on('close', () => {
       ffmpeg.kill('SIGTERM');
-      upstream.body.destroy();
     });
 
     return reply;

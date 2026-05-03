@@ -18,7 +18,7 @@ declare module 'fastify' {
 
 const plugin: FastifyPluginAsync = async (app) => {
   app.addHook('onRequest', async (req, reply) => {
-    if (req.url.startsWith('/healthz')) return;
+    if (req.url.startsWith('/healthz') || req.url.startsWith('/v1/remux')) return;
 
     const token = (req.headers['x-install-token'] as string | undefined)?.trim();
     if (!token) {
