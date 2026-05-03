@@ -92,7 +92,7 @@ export const remuxRoutes: FastifyPluginAsync = async (app) => {
       if (existsSync(playlist) && existsSync(initSeg)) {
         const content = await readFile(playlist, 'utf-8');
         const segCount = (content.match(/\.m4s/g) || []).length;
-        if (segCount >= 8) break;
+        if (segCount >= 4) break;
       }
       await new Promise(r => setTimeout(r, 500));
     }
