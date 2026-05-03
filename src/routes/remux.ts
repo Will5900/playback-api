@@ -83,7 +83,11 @@ export const remuxRoutes: FastifyPluginAsync = async (app) => {
     const { id } = req.params as { id: string };
     const file = join(REMUX_DIR, id, 'stream.m3u8');
     if (!existsSync(file)) { reply.code(404); return { error: 'not found' }; }
-    const content = await readFile(file, 'utf-8');
+    let content = await readFile(file, 'utf-8');
+    // Force VOD so AVPlayer shows a scrubber instead of LIVE badge.
+    if (!content.includes('#EXT-X-ENDLIST')) {
+      content = content.trimEnd() + '\n#EXT-X-ENDLIST\n';
+    }
     reply.header('Content-Type', 'application/vnd.apple.mpegurl');
     reply.header('Cache-Control', 'no-cache');
     return content;
