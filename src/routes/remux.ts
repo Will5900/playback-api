@@ -64,7 +64,6 @@ export const remuxRoutes: FastifyPluginAsync = async (app) => {
       '-f', 'hls',
       '-hls_time', '4',
       '-hls_list_size', '0',
-      '-hls_playlist_type', 'event',
       '-hls_segment_type', 'fmp4',
       '-hls_fmp4_init_filename', 'init.mp4',
       '-hls_segment_filename', join(dir, 'seg%04d.m4s'),
@@ -92,7 +91,8 @@ export const remuxRoutes: FastifyPluginAsync = async (app) => {
     while (Date.now() < deadline) {
       if (existsSync(playlist) && existsSync(initSeg)) {
         const content = await readFile(playlist, 'utf-8');
-        if (content.includes('.m4s')) break;
+        const segCount = (content.match(/\.m4s/g) || []).length;
+        if (segCount >= 8) break;
       }
       await new Promise(r => setTimeout(r, 500));
     }
@@ -115,14 +115,16 @@ export const remuxRoutes: FastifyPluginAsync = async (app) => {
     return { playlistURL: `${base}/v1/remux/${id}/stream.m3u8`, durationSeconds };
   });
 
-  // Serve HLS playlist.
+  // Serve HLS playlist — always as VOD so AVPlayer shows no LIVE badge.
   app.get('/remux/:id/stream.m3u8', async (req, reply) => {
     const { id } = req.params as { id: string };
     const file = join(REMUX_DIR, id, 'stream.m3u8');
     if (!existsSync(file)) { reply.code(404); return { error: 'not found' }; }
     let content = await readFile(file, 'utf-8');
-    const session = sessions.get(id);
-    if (session?.done && !content.includes('#EXT-X-ENDLIST')) {
+    if (!content.includes('#EXT-X-PLAYLIST-TYPE')) {
+      content = content.replace('#EXTM3U', '#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD');
+    }
+    if (!content.includes('#EXT-X-ENDLIST')) {
       content = content.trimEnd() + '\n#EXT-X-ENDLIST\n';
     }
     reply.header('Content-Type', 'application/vnd.apple.mpegurl');
