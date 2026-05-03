@@ -24,6 +24,7 @@ import { streamRoutes } from './routes/streams.js';
 import { resolveRoutes } from './routes/resolve.js';
 import { subtitleRoutes } from './routes/subtitles.js';
 import { watchRoutes } from './routes/watch.js';
+import { v2Routes } from './routes/v2.js';
 
 async function main() {
   const app = Fastify({
@@ -58,6 +59,7 @@ async function main() {
   await app.register(resolveRoutes,   { prefix: '/v1' });
   await app.register(subtitleRoutes,  { prefix: '/v1' });
   await app.register(watchRoutes,     { prefix: '/v1' });
+  await app.register(v2Routes,        { prefix: '/v2' });
 
   // Boot Postgres — fail fast if it can't reach the DB.
   await db.query('SELECT 1');
