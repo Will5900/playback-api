@@ -52,14 +52,14 @@ async function buildHomeResponse() {
     { id: 'latest-series', title: 'Latest Series', type: 'series', titles: latestSeries.slice(0, 20) },
   ];
 
-  for (let i = 0; i < providers.length; i++) {
+  for (const [i, p] of providers.entries()) {
     const movies = providerResults[i * 2] as tmdb.V2Title[];
     const shows = providerResults[i * 2 + 1] as tmdb.V2Title[];
-    const slug = providers[i].name.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const slug = p.name.toLowerCase().replace(/[^a-z0-9]/g, '');
     if (movies.length > 0) {
       rows.push({
         id: `${slug}-movies`,
-        title: `${providers[i].name} Movies`,
+        title: `${p.name} Movies`,
         type: 'movie',
         titles: movies.slice(0, 20),
       });
@@ -67,7 +67,7 @@ async function buildHomeResponse() {
     if (shows.length > 0) {
       rows.push({
         id: `${slug}-series`,
-        title: `${providers[i].name} Shows`,
+        title: `${p.name} Shows`,
         type: 'series',
         titles: shows.slice(0, 20),
       });
