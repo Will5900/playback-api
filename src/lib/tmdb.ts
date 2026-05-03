@@ -382,6 +382,34 @@ export async function tvSeasonEpisodes(tvId: number, season: number): Promise<V2
   }));
 }
 
+export async function nowPlaying(): Promise<V2Title[]> {
+  const resp = await get<TMDBPagedResponse<TMDBResult>>('/movie/now_playing');
+  if (!resp) return [];
+  return Promise.all(resp.results.map(r => mapListResult(r, 'movie')));
+}
+
+export async function onTheAir(): Promise<V2Title[]> {
+  const resp = await get<TMDBPagedResponse<TMDBResult>>('/tv/on_the_air');
+  if (!resp) return [];
+  return Promise.all(resp.results.map(r => mapListResult(r, 'series')));
+}
+
+export async function discoverByProvider(
+  type: 'movie' | 'tv',
+  providerId: number,
+  region: string = 'US',
+): Promise<V2Title[]> {
+  const resp = await get<TMDBPagedResponse<TMDBResult>>(`/discover/${type}`, {
+    with_watch_providers: String(providerId),
+    watch_region: region,
+    with_watch_monetization_types: 'flatrate',
+    sort_by: 'popularity.desc',
+  });
+  if (!resp) return [];
+  const forceType = type === 'tv' ? 'series' : 'movie';
+  return Promise.all(resp.results.map(r => mapListResult(r, forceType)));
+}
+
 export async function externalIds(type: 'movie' | 'tv', id: number): Promise<{ imdbId?: string } | null> {
   const resp = await get<{ imdb_id?: string }>(`/${type}/${id}/external_ids`);
   if (!resp) return null;

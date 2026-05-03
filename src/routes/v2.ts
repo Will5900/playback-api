@@ -23,21 +23,63 @@ export const v2Routes: FastifyPluginAsync = async (app) => {
   app.get('/home', async () => {
     if (!tmdb.isConfigured()) return { heroes: [], rows: [] };
 
-    const [trendingMovies, trendingSeries, popularMovies, popularSeries] = await Promise.all([
+    const providers = [
+      { id: 8, name: 'Netflix' },
+      { id: 337, name: 'Disney+' },
+      { id: 9, name: 'Prime Video' },
+      { id: 1899, name: 'Max' },
+      { id: 350, name: 'Apple TV+' },
+      { id: 15, name: 'Hulu' },
+      { id: 531, name: 'Paramount+' },
+    ];
+
+    const [
+      trendingMovies, trendingSeries,
+      latestMovies, latestSeries,
+      ...providerResults
+    ] = await Promise.all([
       tmdb.trending('movie', 'week'),
       tmdb.trending('tv', 'week'),
-      tmdb.popular('movie'),
-      tmdb.popular('tv'),
+      tmdb.nowPlaying(),
+      tmdb.onTheAir(),
+      ...providers.flatMap(p => [
+        tmdb.discoverByProvider('movie', p.id),
+        tmdb.discoverByProvider('tv', p.id),
+      ]),
     ]);
+
+    const rows: Array<{ id: string; title: string; type: string; titles: tmdb.V2Title[] }> = [
+      { id: 'trending-movies', title: 'Trending Movies', type: 'movie', titles: trendingMovies.slice(0, 20) },
+      { id: 'trending-series', title: 'Trending Series', type: 'series', titles: trendingSeries.slice(0, 20) },
+      { id: 'latest-movies', title: 'Latest Movies', type: 'movie', titles: latestMovies.slice(0, 20) },
+      { id: 'latest-series', title: 'Latest Series', type: 'series', titles: latestSeries.slice(0, 20) },
+    ];
+
+    for (let i = 0; i < providers.length; i++) {
+      const movies = providerResults[i * 2] as tmdb.V2Title[];
+      const shows = providerResults[i * 2 + 1] as tmdb.V2Title[];
+      const slug = providers[i].name.toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (movies.length > 0) {
+        rows.push({
+          id: `${slug}-movies`,
+          title: `${providers[i].name} Movies`,
+          type: 'movie',
+          titles: movies.slice(0, 20),
+        });
+      }
+      if (shows.length > 0) {
+        rows.push({
+          id: `${slug}-series`,
+          title: `${providers[i].name} Shows`,
+          type: 'series',
+          titles: shows.slice(0, 20),
+        });
+      }
+    }
 
     return {
       heroes: trendingMovies.slice(0, 5),
-      rows: [
-        { id: 'trending-movies', title: 'Trending Movies', type: 'movie', titles: trendingMovies.slice(0, 20) },
-        { id: 'trending-series', title: 'Trending Series', type: 'series', titles: trendingSeries.slice(0, 20) },
-        { id: 'popular-movies', title: 'Popular Movies', type: 'movie', titles: popularMovies.slice(0, 20) },
-        { id: 'popular-series', title: 'Popular Series', type: 'series', titles: popularSeries.slice(0, 20) },
-      ],
+      rows,
     };
   });
 
