@@ -135,6 +135,28 @@ export const v2Routes: FastifyPluginAsync = async (app) => {
     return detail;
   });
 
+  // ----- GET /title/series/:id/season/:season -----
+
+  app.get('/title/series/:id/season/:season', async (req, reply) => {
+    const params = z.object({
+      id: z.string().min(1),
+      season: z.coerce.number().int().min(1),
+    }).parse(req.params);
+
+    let tmdbId: number;
+    if (params.id.startsWith('tt')) {
+      const found = await tmdb.findByImdbID(params.id);
+      if (!found?.id) { reply.code(404); return { error: 'title not found' }; }
+      tmdbId = found.id;
+    } else {
+      tmdbId = parseInt(params.id, 10);
+      if (isNaN(tmdbId)) { reply.code(400); return { error: 'invalid id' }; }
+    }
+
+    const episodes = await tmdb.tvSeasonEpisodes(tmdbId, params.season);
+    return { season: params.season, episodes: episodes ?? [] };
+  });
+
   // ----- GET /title/:type/:id/streams -----
   // Resolves TMDB ID → IMDb ID, then fans out to Stremio addons (same as v1).
 

@@ -93,6 +93,7 @@ export interface V2TitleDetail extends V2Title {
   similar: V2Title[] | null;
   videos: V2Video[] | null;
   certification: string | null;
+  numberOfSeasons: number | null;
 }
 
 // --- TMDB raw types ---
@@ -318,6 +319,7 @@ export async function movieDetail(id: number): Promise<V2TitleDetail | null> {
     similar: similar && similar.length > 0 ? similar : null,
     videos: null,
     certification: cert,
+    numberOfSeasons: null,
   };
 }
 
@@ -361,10 +363,11 @@ export async function tvDetail(id: number): Promise<V2TitleDetail | null> {
     similar: similar && similar.length > 0 ? similar : null,
     videos,
     certification: cert,
+    numberOfSeasons: r.number_of_seasons ?? null,
   };
 }
 
-async function tvSeasonEpisodes(tvId: number, season: number): Promise<V2Video[] | null> {
+export async function tvSeasonEpisodes(tvId: number, season: number): Promise<V2Video[] | null> {
   const resp = await get<{ episodes?: TMDBEpisode[] }>(`/tv/${tvId}/season/${season}`);
   if (!resp?.episodes) return null;
   return resp.episodes.map(ep => ({

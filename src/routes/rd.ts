@@ -19,6 +19,11 @@ interface RDDownload {
   generated?: string;
 }
 
+const VIDEO_EXTS = new Set([
+  'mp4', 'mkv', 'avi', 'mov', 'm4v', 'wmv', 'flv', 'webm',
+  'mpg', 'mpeg', 'ts', 'm2ts', 'vob', 'ogv', '3gp', 'rmvb',
+]);
+
 interface EnrichedRD {
   id: string;
   filename: string;
@@ -54,8 +59,13 @@ export const rdRoutes: FastifyPluginAsync = async (app) => {
       return { error: 'Real-Debrid fetch failed', details: (e as Error).message };
     }
 
+    const videoOnly = downloads.filter((d) => {
+      const ext = d.filename.includes('.') ? d.filename.split('.').pop()!.toLowerCase() : '';
+      return ext === '' || VIDEO_EXTS.has(ext);
+    });
+
     const enriched = await Promise.all(
-      downloads.map(async (d): Promise<EnrichedRD> => {
+      videoOnly.map(async (d): Promise<EnrichedRD> => {
         const ext = d.filename.includes('.') ? d.filename.split('.').pop()!.toLowerCase() : '';
         const niceName = prettyName(d.filename);
         const year = extractYear(d.filename);
