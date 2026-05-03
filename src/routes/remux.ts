@@ -19,8 +19,7 @@ export const remuxRoutes: FastifyPluginAsync = async (app) => {
       '-user_agent', 'Playback/1.0',
       '-i', query.url,
       '-c', 'copy',
-      '-movflags', 'frag_keyframe+empty_moov',
-      '-f', 'mp4',
+      '-f', 'mpegts',
       'pipe:1',
     ]);
 
@@ -29,7 +28,7 @@ export const remuxRoutes: FastifyPluginAsync = async (app) => {
     });
 
     reply.raw.writeHead(200, {
-      'Content-Type': 'video/mp4',
+      'Content-Type': 'video/mp2t',
       'Transfer-Encoding': 'chunked',
       'Cache-Control': 'no-store',
     });
