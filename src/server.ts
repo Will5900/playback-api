@@ -22,6 +22,7 @@ import { searchRoutes } from './routes/search.js';
 import { metaRoutes } from './routes/meta.js';
 import { streamRoutes } from './routes/streams.js';
 import { resolveRoutes } from './routes/resolve.js';
+import { remuxRoutes } from './routes/remux.js';
 import { subtitleRoutes } from './routes/subtitles.js';
 import { watchRoutes } from './routes/watch.js';
 import { v2Routes } from './routes/v2.js';
@@ -57,6 +58,7 @@ async function main() {
   await app.register(metaRoutes,      { prefix: '/v1' });
   await app.register(streamRoutes,    { prefix: '/v1' });
   await app.register(resolveRoutes,   { prefix: '/v1' });
+  await app.register(remuxRoutes,     { prefix: '/v1' });
   await app.register(subtitleRoutes,  { prefix: '/v1' });
   await app.register(watchRoutes,     { prefix: '/v1' });
   await app.register(v2Routes,        { prefix: '/v2' });
