@@ -45,10 +45,12 @@ async function buildHomeResponse() {
     ]),
   ]);
 
+  const cinemaMovies = latestMovies.slice(0, 20).map(t => ({ ...t, inCinema: true }));
+
   const rows: Array<{ id: string; title: string; type: string; titles: tmdb.V2Title[] }> = [
     { id: 'trending-movies', title: 'Trending Movies', type: 'movie', titles: trendingMovies.slice(0, 20) },
     { id: 'trending-series', title: 'Trending Series', type: 'series', titles: trendingSeries.slice(0, 20) },
-    { id: 'latest-movies', title: 'Latest Movies', type: 'movie', titles: latestMovies.slice(0, 20) },
+    { id: 'latest-movies', title: 'In Cinemas', type: 'movie', titles: cinemaMovies },
     { id: 'latest-series', title: 'Latest Series', type: 'series', titles: latestSeries.slice(0, 20) },
   ];
 

@@ -67,6 +67,7 @@ export interface V2Title {
   overview: string | null;
   imdbId: string | null;
   tmdbId: number;
+  inCinema?: boolean;
 }
 
 export interface V2CastMember {
