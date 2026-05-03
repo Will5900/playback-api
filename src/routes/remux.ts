@@ -18,7 +18,6 @@ export const remuxRoutes: FastifyPluginAsync = async (app) => {
     const upstream = await request(query.url, {
       method: 'GET',
       headers: { 'User-Agent': 'Playback/1.0' },
-      maxRedirections: 5,
     });
 
     if (upstream.statusCode < 200 || upstream.statusCode >= 400) {
