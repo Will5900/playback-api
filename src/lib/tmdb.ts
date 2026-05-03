@@ -411,6 +411,20 @@ export async function discoverByProvider(
   return Promise.all(resp.results.map(r => mapListResult(r, forceType)));
 }
 
+export async function recommendations(type: 'movie' | 'tv', id: number): Promise<V2Title[]> {
+  const resp = await get<TMDBPagedResponse<TMDBResult>>(`/${type}/${id}/recommendations`);
+  if (!resp) return [];
+  const forceType = type === 'tv' ? 'series' : 'movie';
+  return Promise.all(resp.results.slice(0, 12).map(r => mapListResult(r, forceType)));
+}
+
+export async function topRated(type: 'movie' | 'tv'): Promise<V2Title[]> {
+  const resp = await get<TMDBPagedResponse<TMDBResult>>(`/${type}/top_rated`);
+  if (!resp) return [];
+  const forceType = type === 'tv' ? 'series' : 'movie';
+  return Promise.all(resp.results.map(r => mapListResult(r, forceType)));
+}
+
 export async function externalIds(type: 'movie' | 'tv', id: number): Promise<{ imdbId?: string } | null> {
   const resp = await get<{ imdb_id?: string }>(`/${type}/${id}/external_ids`);
   if (!resp) return null;

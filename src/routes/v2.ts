@@ -101,6 +101,179 @@ export const v2Routes: FastifyPluginAsync = async (app) => {
     return data;
   });
 
+  // ----- GET /recommendations -----
+
+  const recoCache = new Map<string, { data: unknown; expiresAt: number }>();
+  const RECO_CACHE_TTL = 30 * 60 * 1000;
+
+  app.get('/recommendations', async (req) => {
+    if (!tmdb.isConfigured()) return { rows: [] };
+
+    const q = z.object({ profileId: z.string().uuid().optional() }).parse(req.query);
+    const cacheKey = `${req.deviceId}:${q.profileId ?? 'default'}`;
+    const now = Date.now();
+    const cached = recoCache.get(cacheKey);
+    if (cached && now < cached.expiresAt) return cached.data;
+
+    // 1. Get watch history for this profile
+    const watchResult = await db.query<{
+      titleId: string; kind: string; positionSec: number | null;
+      durationSec: number | null; occurredAt: Date;
+    }>(
+      `SELECT DISTINCT ON (title_id)
+              title_id AS "titleId",
+              kind,
+              position_sec AS "positionSec",
+              duration_sec AS "durationSec",
+              occurred_at AS "occurredAt"
+         FROM watch_events
+        WHERE device_id = $1
+          AND ($2::uuid IS NULL OR profile_id = $2)
+          AND kind IN ('progress', 'finish')
+        ORDER BY title_id, occurred_at DESC
+        LIMIT 100`,
+      [req.deviceId, q.profileId ?? null]
+    );
+
+    // Also get saved titles for genre signals
+    const savedResult = await db.query<{ genre: string | null; titleId: string }>(
+      `SELECT genre, title_id AS "titleId"
+         FROM saved_titles
+        WHERE device_id = $1 AND ($2::uuid IS NULL OR profile_id = $2)`,
+      [req.deviceId, q.profileId ?? null]
+    );
+
+    const watchedTitleIds = watchResult.rows.map(r => r.titleId);
+    const watchedSet = new Set(watchedTitleIds);
+
+    // 2. Parse TMDB IDs from title_ids (format varies: plain number, "movie::123", "series::456")
+    const tmdbIds: Array<{ id: number; type: 'movie' | 'tv' }> = [];
+    for (const titleId of watchedTitleIds) {
+      const cleaned = titleId.replace(/^(movie|series)::/, '');
+      const num = parseInt(cleaned, 10);
+      if (!isNaN(num)) {
+        const type = titleId.startsWith('series') || titleId.includes('series') ? 'tv' : 'movie';
+        tmdbIds.push({ id: num, type });
+      }
+    }
+
+    // 3. Get genre signals from saved titles
+    const genreCounts = new Map<string, number>();
+    for (const saved of savedResult.rows) {
+      if (saved.genre) {
+        genreCounts.set(saved.genre, (genreCounts.get(saved.genre) ?? 0) + 1);
+      }
+    }
+
+    const rows: Array<{ id: string; title: string; type: string; titles: tmdb.V2Title[] }> = [];
+
+    // 4. "Because you watched X" rows from TMDB recommendations
+    const recoSourceIds = tmdbIds.slice(0, 4);
+    const recoResults = await Promise.all(
+      recoSourceIds.map(async (src) => {
+        const recos = await tmdb.recommendations(src.type, src.id);
+        // Get the source title name
+        const detail = src.type === 'movie'
+          ? await tmdb.movieDetail(src.id)
+          : await tmdb.tvDetail(src.id);
+        const sourceName = detail?.name ?? `Title ${src.id}`;
+        return { sourceName, type: src.type === 'tv' ? 'series' : 'movie', recos };
+      })
+    );
+
+    for (const { sourceName, type, recos } of recoResults) {
+      const filtered = recos
+        .filter(t => !watchedSet.has(t.id) && !watchedSet.has(`${type}::${t.id}`))
+        .slice(0, 12);
+      if (filtered.length >= 3) {
+        rows.push({
+          id: `reco-${sourceName.toLowerCase().replace(/\W+/g, '-')}`,
+          title: `Because you watched ${sourceName}`,
+          type,
+          titles: filtered,
+        });
+      }
+    }
+
+    // 5. Genre-based discovery rows
+    // Collect genres from watched titles via TMDB
+    for (const { sourceName, type, recos } of recoResults) {
+      for (const title of recos) {
+        if (title.genres) {
+          for (const g of title.genres) {
+            genreCounts.set(g, (genreCounts.get(g) ?? 0) + 1);
+          }
+        }
+      }
+    }
+
+    const topGenres = [...genreCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([name]) => name);
+
+    if (topGenres.length > 0) {
+      const movieGenres = await tmdb.genreList('movie');
+      const tvGenres = await tmdb.genreList('tv');
+      const allGenres = [...movieGenres, ...tvGenres];
+
+      for (const genreName of topGenres) {
+        const genre = allGenres.find(g => g.name === genreName);
+        if (!genre) continue;
+
+        const [movieDiscover, tvDiscover] = await Promise.all([
+          tmdb.discover('movie', genre.id),
+          tmdb.discover('tv', genre.id),
+        ]);
+
+        const movieTitles = movieDiscover.titles
+          .filter(t => !watchedSet.has(t.id))
+          .slice(0, 12);
+        const tvTitles = tvDiscover.titles
+          .filter(t => !watchedSet.has(t.id))
+          .slice(0, 12);
+
+        if (movieTitles.length >= 3) {
+          rows.push({
+            id: `genre-movie-${genre.id}`,
+            title: `${genreName} Movies For You`,
+            type: 'movie',
+            titles: movieTitles,
+          });
+        }
+        if (tvTitles.length >= 3) {
+          rows.push({
+            id: `genre-tv-${genre.id}`,
+            title: `${genreName} Shows For You`,
+            type: 'series',
+            titles: tvTitles,
+          });
+        }
+      }
+    }
+
+    // 6. Fallback: if no watch history, show top rated + popular
+    if (rows.length === 0) {
+      const [topMovies, topShows, popularMovies, popularShows] = await Promise.all([
+        tmdb.topRated('movie'),
+        tmdb.topRated('tv'),
+        tmdb.popular('movie'),
+        tmdb.popular('tv'),
+      ]);
+
+      rows.push(
+        { id: 'top-movies', title: 'Top Rated Movies', type: 'movie', titles: topMovies.slice(0, 20) },
+        { id: 'top-shows', title: 'Top Rated Shows', type: 'series', titles: topShows.slice(0, 20) },
+        { id: 'popular-movies', title: 'Popular Movies', type: 'movie', titles: popularMovies.slice(0, 20) },
+        { id: 'popular-shows', title: 'Popular Shows', type: 'series', titles: popularShows.slice(0, 20) },
+      );
+    }
+
+    const data = { rows };
+    recoCache.set(cacheKey, { data, expiresAt: now + RECO_CACHE_TTL });
+    return data;
+  });
+
   // ----- GET /trending/:window -----
 
   app.get('/trending/:window', async (req) => {
