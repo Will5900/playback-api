@@ -16,6 +16,30 @@ const REMUX_DIR = '/tmp/remux';
 const SESSION_TTL_MS = 2 * 60 * 60 * 1000;
 const sessions = new Map<string, { done: boolean }>();
 
+function probeDuration(url: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    const probe = spawn('ffprobe', [
+      '-v', 'quiet',
+      '-print_format', 'json',
+      '-show_format',
+      '-user_agent', 'Playback/1.0',
+      url,
+    ]);
+    let output = '';
+    probe.stdout.on('data', (chunk: Buffer) => { output += chunk; });
+    probe.on('close', () => {
+      try {
+        const info = JSON.parse(output);
+        const dur = parseFloat(info.format?.duration);
+        resolve(isFinite(dur) ? dur : null);
+      } catch {
+        resolve(null);
+      }
+    });
+    setTimeout(() => { probe.kill(); resolve(null); }, 10_000);
+  });
+}
+
 export const remuxRoutes: FastifyPluginAsync = async (app) => {
 
   // Start a remux session — returns the HLS playlist URL.
@@ -53,22 +77,24 @@ export const remuxRoutes: FastifyPluginAsync = async (app) => {
       app.log.warn('[remux] ' + chunk.toString().trim());
     });
 
-    // Wait for ffmpeg to fully complete so the playlist has #EXT-X-ENDLIST.
-    const completion = new Promise<number | null>((resolve) => {
-      ffmpeg.on('close', (code) => {
-        if (code !== 0) app.log.warn(`[remux] ffmpeg exited ${code}`);
-        const session = sessions.get(id);
-        if (session) session.done = true;
-        resolve(code);
-      });
+    ffmpeg.on('close', (code) => {
+      if (code !== 0) app.log.warn(`[remux] ffmpeg exited ${code}`);
+      const session = sessions.get(id);
+      if (session) session.done = true;
     });
 
-    const timeout = new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), 180_000));
-    const result = await Promise.race([completion, timeout]);
+    // Probe total duration and wait for first segments in parallel.
+    const durationPromise = probeDuration(body.url);
 
     const playlist = join(dir, 'stream.m3u8');
-    if (result === 'timeout') {
-      app.log.warn(`[remux] ${id} still running after 180s, returning anyway`);
+    const initSeg = join(dir, 'init.mp4');
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      if (existsSync(playlist) && existsSync(initSeg)) {
+        const content = await readFile(playlist, 'utf-8');
+        if (content.includes('.m4s')) break;
+      }
+      await new Promise(r => setTimeout(r, 500));
     }
 
     if (!existsSync(playlist)) {
@@ -77,6 +103,8 @@ export const remuxRoutes: FastifyPluginAsync = async (app) => {
       return { error: 'ffmpeg failed to produce output' };
     }
 
+    const durationSeconds = await durationPromise;
+
     // Schedule cleanup.
     setTimeout(() => {
       rm(dir, { recursive: true, force: true }).catch(() => {});
@@ -84,7 +112,7 @@ export const remuxRoutes: FastifyPluginAsync = async (app) => {
     }, SESSION_TTL_MS);
 
     const base = `${req.protocol}://${req.hostname}`;
-    return { playlistURL: `${base}/v1/remux/${id}/stream.m3u8` };
+    return { playlistURL: `${base}/v1/remux/${id}/stream.m3u8`, durationSeconds };
   });
 
   // Serve HLS playlist.
